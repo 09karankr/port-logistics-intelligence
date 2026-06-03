@@ -1,162 +1,191 @@
 # Real-Time Port & Logistics Intelligence System
 
-Palantir-inspired global shipping intelligence platform with live AIS vessel tracking, risk scoring, port congestion detection, and automated alerting.
+> A Palantir-inspired maritime intelligence platform that tracks real vessels live on a global map, scores shipment delivery risk in real time, and fires automated Slack alerts when something goes wrong.
+
+**[Live Demo](https://port-logistics-intelligence-ten.vercel.app)** · **[Demo Video](#)** · Built by [Karan Kumar](https://github.com/09karankr)
 
 ---
 
-## What it does
+## The Problem
 
-- **Live vessel tracking** — ingests real AIS positions via [aisstream.io](https://aisstream.io) WebSocket for cargo and tanker vessels globally
-- **Risk scoring** — composite 0–100 score per shipment: ETA deviation + port congestion + weather hazard
-- **Port congestion detection** — counts stationary vessels in anchorage zones, benchmarks against 90-day baseline
-- **Weather correlation** — OpenWeatherMap marine data overlaid on vessel paths
-- **Automated alerts** — Slack + email when shipments cross risk thresholds
-- **Historical analytics** — which ports are consistently late, which shipping lanes are riskiest by season
+When a $200M shipment leaves Shanghai, the retailer has zero visibility into whether it arrives on time. Port congestion, typhoons, and customs delays make ETA unpredictable. This system gives operations teams a live situational picture and early warnings before delays become crises — the same way Palantir, Flexport, and Project44 do it.
 
 ---
 
-## Prerequisites
+## What It Does
 
-| Tool | Version |
+| Feature | Description |
 |---|---|
-| Docker + Docker Compose | v2.x |
-| Node.js | 20.x (local dev only) |
-| Python | 3.12 (local dev only) |
+| **Live vessel tracking** | Ingests real AIS (ship GPS transponder) data via WebSocket — the same signal coast guards use |
+| **Global lane simulation** | 1,400+ synthetic vessels sail realistic great-circle routes across trans-Pacific, Suez, Atlantic lanes |
+| **Risk scoring** | Every 10 min: scores each shipment 0–100 across ETA delay, port congestion, and weather hazard |
+| **Port congestion detection** | Counts vessels stationary in anchorage zones via PostGIS spatial queries, benchmarks against 90-day baseline |
+| **Weather correlation** | OpenWeatherMap marine data overlaid on vessel projected paths |
+| **Automated alerts** | Slack + email fires when a shipment crosses HIGH (>70) or MEDIUM (>40) risk threshold |
+| **Historical analytics** | Which ports are consistently late? Which shipping lanes are riskiest by season? |
 
 ---
 
-## Quick Start
+## Risk Score Breakdown
 
-### 1. Get API Keys (all free tier)
-
-| Service | URL | Used for |
-|---|---|---|
-| aisstream.io | https://aisstream.io | Live AIS vessel positions |
-| OpenWeatherMap | https://openweathermap.org/api | Marine weather |
-| ~~Mapbox~~ | N/A | Map tiles — replaced by CARTO (no signup) |
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env and fill in your API keys
 ```
-
-### 3. Launch with Docker
-
-```bash
-bash scripts/start.sh
+ETA Delay Score     0–40 pts  →  how many days late vs scheduled delivery
+Port Congestion     0–30 pts  →  anchored vessel count vs 90-day baseline
+Weather Hazard      0–30 pts  →  wave height / wind speed on projected path
+─────────────────────────────────────────────────────────────────────
+Total 0–100   →   LOW / MEDIUM / HIGH
 ```
-
-Opens at **http://localhost:3000**
-
-API docs at **http://localhost:8000/docs**
-
-### 4. Seed synthetic orders (after ~2 minutes)
-
-Wait for the AIS consumer to ingest some vessels, then:
-
-```bash
-docker compose exec celery_worker python db/seeds/synthetic_orders.py
-```
-
-This creates ~40 fictional purchase orders linked to real tracked vessels.
-
----
-
-## Local Development (no Docker for app code)
-
-```bash
-cp .env.example .env
-bash scripts/dev.sh
-```
-
-This starts DB + Redis in Docker and runs all Python/Node processes locally with hot-reload.
 
 ---
 
 ## Architecture
 
 ```
-aisstream.io WebSocket
+aisstream.io WebSocket (real AIS)
         │
         ▼
-  AIS Consumer (Python asyncio)
-        │  batch insert every 5s
-        ▼
-  TimescaleDB + PostGIS ◄──── Weather Poller (Celery beat, 30min)
-        │                              ▲
-        ▼                              │ OpenWeatherMap API
-  Celery Worker (risk scoring, 10min)
+  AIS Consumer ←──────────────── Vessel Simulator (1,400+ synthetic ships)
+  (Python asyncio)                (great-circle routes, 30s updates)
         │
-        ├──► risk_scores table
-        │
-        └──► Alert tasks ──► Slack / Email
-                │
-                ▼
-          FastAPI (REST + WebSocket)
-                │
-                ├──► Redis pub/sub (live positions → WS clients)
-                │
-                ▼
-         React + Mapbox GL JS
+        └──────────────┬────────────────────────┘
+                       │ batch insert
+                       ▼
+              TimescaleDB + PostGIS
+              (time-series + geospatial)
+                       │
+          ┌────────────┼──────────────┐
+          ▼            ▼              ▼
+    Risk Engine    Weather         Congestion
+    (Celery,       Poller          Detector
+     10 min)       (30 min)        (15 min)
+          │
+          └──→ Alert Tasks ──→ Slack / Email
+                       │
+                 FastAPI (REST + WebSocket)
+                       │
+              Redis pub/sub (live position fan-out)
+                       │
+              React + MapLibre GL JS
 ```
 
 ---
 
-## Services
+## Tech Stack & Why
 
-| Service | Port | Description |
+| Layer | Technology | Why |
 |---|---|---|
-| `db` | 5432 | TimescaleDB + PostGIS |
-| `redis` | 6379 | Celery broker + WS pub/sub |
-| `ais_consumer` | — | AIS WebSocket consumer |
-| `celery_worker` | — | Risk scoring + alert dispatch |
-| `celery_beat` | — | Scheduled tasks (weather, congestion) |
-| `api` | 8000 | FastAPI REST + WebSocket |
-| `frontend` | 3000 | React + Mapbox |
+| **AIS ingestion** | Python asyncio + websockets | Non-blocking WebSocket consumer handles thousands of messages/sec without threads |
+| **Time-series DB** | TimescaleDB (PostgreSQL extension) | Auto-partitions position data by time, compresses old chunks, continuous aggregates for analytics — same stack used by enterprise fleet platforms |
+| **Geospatial** | PostGIS | Native SQL spatial queries: "count vessels within 10nm of port", great-circle distance, spatial indexing |
+| **Task queue** | Celery + Redis | Distributed background workers for risk scoring, weather polling, alert dispatch — decoupled from the API |
+| **API** | FastAPI | Async Python, auto-generates OpenAPI docs, native WebSocket support |
+| **Live push** | Redis pub/sub | AIS consumer publishes positions → API subscribes → pushes to all browser clients. Decouples producer from consumers |
+| **Map** | MapLibre GL JS + CARTO tiles | Open-source Mapbox fork, no API key required. GPU-rendered GL layers handle 10K+ vessel dots at 60fps |
+| **Frontend state** | Zustand | Minimal global store for vessel positions — avoids Redux boilerplate for a single shared data source |
+| **Infrastructure** | Docker Compose | All 7 services (DB, Redis, API, Celery worker, Celery beat, AIS consumer, simulator) wired together with health checks |
 
 ---
 
-## API Reference
+## Data Sources
 
-| Endpoint | Description |
+| Source | What it provides | Cost |
+|---|---|---|
+| [aisstream.io](https://aisstream.io) | Live WebSocket feed of real vessel GPS positions | Free tier |
+| [OpenWeatherMap](https://openweathermap.org/api) | Marine weather — wind speed, storm alerts | Free tier |
+| [CARTO Basemaps](https://carto.com/basemaps) | Dark map tiles | Free, no account |
+| Built-in simulator | 1,400+ vessels on real shipping lane routes | Custom-built |
+
+---
+
+## Run Locally
+
+### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) (running)
+- [Git](https://git-scm.com)
+
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/09karankr/port-logistics-intelligence.git
+cd port-logistics-intelligence
+cp .env.example .env
+```
+
+Open `.env` and fill in:
+```env
+AISSTREAM_API_KEY=    # free at aisstream.io
+OPENWEATHER_API_KEY=  # free at openweathermap.org
+SLACK_WEBHOOK_URL=    # optional — for alerts
+```
+
+### 2. Start everything
+
+```bash
+bash scripts/start.sh
+```
+
+This starts all 7 Docker services. First run takes ~3 min to pull images.
+
+### 3. Seed the database
+
+Wait ~2 minutes for the AIS consumer to ingest vessels, then:
+
+```bash
+docker compose exec celery_worker python db/seeds/synthetic_orders.py
+```
+
+### 4. Open the app
+
+| Service | URL |
 |---|---|
-| `GET /vessels/live` | All active vessels (GeoJSON-ready) |
-| `GET /vessels/{mmsi}/track` | Historical track (last N hours) |
-| `GET /vessels/{mmsi}/risk` | Current risk score + signal breakdown |
-| `GET /ports/congestion/all` | Live congestion for all ports |
-| `GET /orders` | Shipment orders (filterable) |
-| `POST /orders` | Create a synthetic order |
-| `GET /analytics/fleet-summary` | Dashboard stats |
-| `GET /analytics/port-performance` | Port congestion rankings |
-| `GET /analytics/lane-risk` | Risk by shipping lane + month |
-| `GET /analytics/high-risk-shipments` | Active HIGH/MEDIUM risk list |
-| `WS /ws/stream` | Live vessel position WebSocket |
+| Frontend | http://localhost:3000 |
+| API docs | http://localhost:8000/docs |
 
-Full interactive docs: http://localhost:8000/docs
+### 5. Trigger risk scoring (optional — runs automatically every 10 min)
 
----
+```bash
+docker compose exec celery_worker celery -A celery_app.app call celery_app.tasks.risk_scoring.score_all_active_vessels
+```
 
-## Risk Score Breakdown
+### Stop
 
-| Signal | Max Points | Logic |
-|---|---|---|
-| ETA Delay | 40 | Log-scale: 1 day late → ~13 pts, 5 days → ~32 pts, 10 days → 40 pts |
-| Port Congestion | 30 | Linear: congestion_pct × 0.30 |
-| Weather Hazard | 30 | Wave ≥ 4m or wind ≥ 40 kn → 30 pts; moderate → proportional |
-
-**LOW** < 40 · **MEDIUM** 40–70 · **HIGH** > 70
-
-Alerts fire on threshold crossing with 4-hour cooldown per vessel.
+```bash
+docker compose down
+```
 
 ---
 
-## Stack
+## Share a Live Demo
 
-- **Ingestion**: Python asyncio WebSocket consumer, asyncpg
-- **Storage**: TimescaleDB (time-series partitioning), PostGIS (geospatial), Redis
-- **Processing**: Celery workers + beat scheduler
-- **API**: FastAPI, asyncpg, Pydantic v2
-- **Frontend**: React 18, MapLibre GL JS + CARTO tiles (no API key), Recharts, Zustand, TanStack Query
-- **Infrastructure**: Docker Compose
+To share the running app with someone outside your network:
+
+```bash
+# 1. Start the backend
+docker compose up -d
+
+# 2. Open a public tunnel
+cloudflared tunnel --url http://localhost:8000
+# Copy the printed URL: https://xxxx.trycloudflare.com
+
+# 3. Set VITE_API_URL in Vercel → Settings → Environment Variables
+#    Then redeploy
+
+# 4. Share: https://port-logistics-intelligence-ten.vercel.app
+```
+
+> The cloudflared URL changes each session, so repeat steps 2–3 each time.
+
+---
+
+## Services Overview
+
+| Container | Role |
+|---|---|
+| `portintel_db` | TimescaleDB + PostGIS (port 5432) |
+| `portintel_redis` | Celery broker + WebSocket pub/sub |
+| `portintel_ais` | AIS WebSocket consumer |
+| `portintel_simulator` | Synthetic vessel position engine |
+| `portintel_celery_worker` | Risk scoring + alert dispatch |
+| `portintel_celery_beat` | Scheduled task runner (weather, congestion) |
+| `portintel_api` | FastAPI REST + WebSocket (port 8000) |
+| `portintel_frontend` | React + MapLibre GL (port 3000) |
