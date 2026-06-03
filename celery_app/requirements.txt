@@ -1,0 +1,13 @@
+celery==5.4.0
+redis==5.0.4
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.30
+geoalchemy2==0.15.1
+requests==2.32.3
+python-dotenv==1.0.1
+structlog==24.1.0
+shapely==2.0.4
+geopy==2.4.1
+# Alerting
+sendgrid==6.11.0
+slack-sdk==3.27.2

@@ -1,0 +1,5 @@
+asyncpg==0.29.0
+redis==5.0.4
+orjson==3.10.3
+python-dotenv==1.0.1
+structlog==24.1.0
